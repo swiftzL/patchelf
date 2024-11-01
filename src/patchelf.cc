@@ -30,6 +30,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <iostream>
 
 #include <cassert>
 #include <cerrno>
@@ -180,13 +181,14 @@ struct SysError : std::runtime_error
 static FileContents readFile(const std::string & fileName,
     size_t cutOff = std::numeric_limits<size_t>::max())
 {
+    std::cout << "start read file " << fileName<<std::endl;
     struct stat st;
     if (stat(fileName.c_str(), &st) != 0)
         throw SysError(fmt("getting info about '", fileName, "'"));
 
     if (static_cast<uint64_t>(st.st_size) > static_cast<uint64_t>(std::numeric_limits<size_t>::max()))
         throw SysError(fmt("cannot read file of size ", st.st_size, " into memory"));
-
+    std::cout << "read file size is " << st.st_size<<std::endl;
     size_t size = std::min(cutOff, static_cast<size_t>(st.st_size));
 
     FileContents contents = std::make_shared<std::vector<unsigned char>>(size);
@@ -272,13 +274,13 @@ ElfFile<ElfFileParamNames>::ElfFile(FileContents fContents)
     /* Check the ELF header for basic validity. */
     if (fileContents->size() < (off_t) sizeof(Elf_Ehdr)) error("missing ELF header");
 
-
-    if (memcmp(hdr()->e_ident, ELFMAG, SELFMAG) != 0)
+    
+    if (memcmp(hdr()->e_ident, ELFMAG, SELFMAG) != 0) //elf magic number
         error("not an ELF executable");
 
-    littleEndian = hdr()->e_ident[EI_DATA] == ELFDATA2LSB;
+    littleEndian = hdr()->e_ident[EI_DATA] == ELFDATA2LSB; //little endian
 
-    if (rdi(hdr()->e_type) != ET_EXEC && rdi(hdr()->e_type) != ET_DYN)
+    if (rdi(hdr()->e_type) != ET_EXEC && rdi(hdr()->e_type) != ET_DYN) //elf exec or so 
         error("wrong ELF type");
 
     {
@@ -287,6 +289,7 @@ ElfFile<ElfFileParamNames>::ElfFile(FileContents fContents)
         auto ph_entsize = rdi(hdr()->e_phentsize);
         size_t ph_size, ph_end;
 
+   
         if (__builtin_mul_overflow(ph_num, ph_entsize, &ph_size)
             || __builtin_add_overflow(ph_offset, ph_size, &ph_end)
             || ph_end > fileContents->size()) {
@@ -298,9 +301,9 @@ ElfFile<ElfFileParamNames>::ElfFile(FileContents fContents)
         error("no section headers. The input file is probably a statically linked, self-decompressing binary");
 
     {
-        auto sh_offset = rdi(hdr()->e_shoff);
-        auto sh_num = rdi(hdr()->e_shnum);
-        auto sh_entsize = rdi(hdr()->e_shentsize);
+        auto sh_offset = rdi(hdr()->e_shoff); //section offset
+        auto sh_num = rdi(hdr()->e_shnum); //section num
+        auto sh_entsize = rdi(hdr()->e_shentsize); //section entriy size
         size_t sh_size, sh_end;
 
         if (__builtin_mul_overflow(sh_num, sh_entsize, &sh_size)
@@ -332,8 +335,8 @@ ElfFile<ElfFileParamNames>::ElfFile(FileContents fContents)
     /* Get the section header string table section (".shstrtab").  Its
        index in the section header table is given by e_shstrndx field
        of the ELF header. */
-    auto shstrtabIndex = rdi(hdr()->e_shstrndx);
-    if (shstrtabIndex >= shdrs.size())
+    auto shstrtabIndex = rdi(hdr()->e_shstrndx);//小端读取数据 
+    if (shstrtabIndex >= shdrs.size())    
         error("string table index out of bounds");
 
     auto shstrtabSize = rdi(shdrs[shstrtabIndex].sh_size);
@@ -350,10 +353,14 @@ ElfFile<ElfFileParamNames>::ElfFile(FileContents fContents)
         error("string table is not zero terminated");
 
     sectionNames = std::string(shstrtab, shstrtabSize);
+    std::cout << "section names " << sectionNames<<std::endl;
 
     sectionsByOldIndex.resize(shdrs.size());
-    for (size_t i = 1; i < shdrs.size(); ++i)
+    for (size_t i = 1; i < shdrs.size(); ++i){
         sectionsByOldIndex.at(i) = getSectionName(shdrs.at(i));
+        std::cout << "section name is " << sectionsByOldIndex[i]<<std::endl;
+    }
+        
 }
 
 
@@ -641,7 +648,7 @@ bool ElfFile<ElfFileParamNames>::haveReplacedSection(const SectionName & section
 }
 
 template<ElfFileParams>
-std::string & ElfFile<ElfFileParamNames>::replaceSection(const SectionName & sectionName,
+std::string & ElfFile<ElfFileParamNames>::replaceSection(const SectionName & sectionName, //replace section dynstr
     unsigned int size)
 {
     auto i = replacedSections.find(sectionName);
@@ -650,7 +657,7 @@ std::string & ElfFile<ElfFileParamNames>::replaceSection(const SectionName & sec
     if (i != replacedSections.end()) {
         s = std::string(i->second);
     } else {
-        auto shdr = findSectionHeader(sectionName);
+        auto shdr = findSectionHeader(sectionName);//section header
         s = extractString(fileContents, rdi(shdr.sh_offset), rdi(shdr.sh_size));
     }
 
@@ -1867,14 +1874,14 @@ void ElfFile<ElfFileParamNames>::addNeeded(const std::set<std::string> & libs)
     auto shdrDynamic = findSectionHeader(".dynamic");
     auto shdrDynStr = findSectionHeader(".dynstr");
 
-    unsigned int length = 0;
+    unsigned int length = 0; //lib length
 
     /* add all new libs to the dynstr string table */
     for (auto &lib : libs)
         length += lib.size() + 1;
 
     std::string & newDynStr = replaceSection(".dynstr",
-        rdi(shdrDynStr.sh_size) + length + 1);
+        rdi(shdrDynStr.sh_size) + length + 1); //dynstr lib
 
     std::set<Elf64_Xword> libStrings;
     unsigned int pos = 0;
@@ -1883,13 +1890,14 @@ void ElfFile<ElfFileParamNames>::addNeeded(const std::set<std::string> & libs)
         libStrings.insert(rdi(shdrDynStr.sh_size) + pos);
         pos += i.size() + 1;
     }
+    std::cout << "replace add need:" << newDynStr << std::endl;
 
     /* add all new needed entries to the dynamic section */
-    std::string & newDynamic = replaceSection(".dynamic",
+    std::string & newDynamic = replaceSection(".dynamic",            //dynamic
         rdi(shdrDynamic.sh_size) + sizeof(Elf_Dyn) * libs.size());
 
     unsigned int idx = 0;
-    for ( ; rdi(reinterpret_cast<const Elf_Dyn *>(newDynamic.c_str())[idx].d_tag) != DT_NULL; idx++) ;
+    for ( ; rdi(reinterpret_cast<const Elf_Dyn *>(newDynamic.c_str())[idx].d_tag) != DT_NULL; idx++) ;//DT_NULL标记结束
     debug("DT_NULL index is %d\n", idx);
 
     /* Shift all entries down by the number of new entries. */
@@ -1900,8 +1908,8 @@ void ElfFile<ElfFileParamNames>::addNeeded(const std::set<std::string> & libs)
     unsigned int i = 0;
     for (auto & j : libStrings) {
         Elf_Dyn newDyn;
-        wri(newDyn.d_tag, DT_NEEDED);
-        wri(newDyn.d_un.d_val, j);
+        wri(newDyn.d_tag, DT_NEEDED); //write need
+        wri(newDyn.d_un.d_val, j);  //so字符串相对偏移地址
         setSubstr(newDynamic, i * sizeof(Elf_Dyn), std::string((char *) &newDyn, sizeof(Elf_Dyn)));
         i++;
     }
